@@ -209,7 +209,7 @@
     }
   }
 
-  function render(entered) {
+  function render(entered, nativeView) {
     const dialog = document.createElement("dialog");
     dialog.id = "lep-dialog";
     dialog.setAttribute("aria-labelledby", "lep-title");
@@ -267,9 +267,9 @@
         <label><input data-setting="native" type="checkbox"> Usar el botón de pantalla completa de Spotify</label>
       </section>`;
     const ui = Object.fromEntries([...dialog.querySelectorAll("[data-ui]")].map((node) => [node.dataset.ui, node]));
-    const state = { dialog, ui, entered, controller: new AbortController(),
+    const state = { dialog, ui, entered, openedAt: performance.now(), controller: new AbortController(),
       rows: [], active: -1, frame: 0, deadline: 0, dirty: false, track: null, previous: null,
-      routeFrom: currentPath(), clickedLyrics: false, clock: "", seeking: false, metadataFrame: 0, artworkAnimation: null };
+      ...nativeView, clock: "", seeking: false, metadataFrame: 0, artworkAnimation: null };
     stage = state;
     const on = (target, type, callback) => target.addEventListener(type, callback, { signal: state.controller.signal });
 
@@ -355,7 +355,9 @@
     player.addEventListener("onprogress", state.onPlayback);
     on(dialog, "close", () => dispose(state));
     on(document, "fullscreenchange", () => {
-      if (state.entered && !document.fullscreenElement) dialog.close();
+      if (!state.entered || document.fullscreenElement) return;
+      if (performance.now() - state.openedAt < 700) state.entered = false;
+      else dialog.close();
     });
     on(document, "visibilitychange", () => {
       if (document.hidden) {
@@ -431,7 +433,7 @@
     const { ui } = state;
     state.track = current;
     if (!old || old.title !== current.title || old.artists !== current.artists) {
-      ui.title.textContent = current.title || (player.getDuration() > 0 ? "Pista en reproducción" : "Sin reproducción");
+      ui.title.textContent = current.title || (durationMs() > 0 ? "Pista en reproducción" : "Sin reproducción");
       ui.artist.textContent = current.artists;
     }
     if (!old || old.art !== current.art) {
@@ -457,7 +459,7 @@
       ui.lines.replaceChildren();
       ui.credit.hidden = true;
       ui.scroll.scrollTop = 0;
-      const hasTrack = Boolean(current.title || current.uri || player.getDuration() > 0);
+      const hasTrack = Boolean(current.title || current.uri || durationMs() > 0);
       status(state, hasTrack ? "Buscando letra…" : "Reproduce una canción para ver su letra.");
       if (hasTrack) openNativeLyrics(state);
       watchLyrics(state);
@@ -494,17 +496,22 @@
     return String(Math.floor(seconds / 60)) + ":" + String(seconds % 60).padStart(2, "0");
   }
 
+  function durationMs() {
+    try { return Math.max(0, Number(player.getDuration()) || 0); }
+    catch { return 0; }
+  }
+
   function updateClock(state) {
     if (document.hidden) return;
     const { ui } = state;
-    const playing = player.isPlaying();
+    const duration = durationMs();
+    const playing = duration > 0 && player.isPlaying();
     if (ui.play.dataset.playing !== String(playing)) {
       ui.play.dataset.playing = String(playing);
       ui.play.innerHTML = icon(playing ? "pause" : "play");
       ui.play.setAttribute("aria-label", playing ? "Pausar" : "Reproducir");
     }
-    const duration = Math.max(0, Number(player.getDuration()) || 0);
-    const progress = Math.max(0, Number(player.getProgress()) || 0);
+    const progress = duration ? Math.max(0, Number(player.getProgress()) || 0) : 0;
     const seconds = Math.min(Math.ceil(duration / 1000), Math.floor(progress / 1000));
     const clock = String(seconds) + "/" + duration;
     if (clock === state.clock || state.seeking) return;
@@ -535,7 +542,7 @@
   function watchLyrics(state) {
     stopWatching(state);
     if (document.hidden || stage !== state || settings.layout === "cover" ||
-        !(state.track?.title || state.track?.uri || player.getDuration() > 0)) return;
+        !(state.track?.title || state.track?.uri || durationMs() > 0)) return;
     const findSource = () => {
       const mapped = document.querySelector(SOURCE);
       if (mapped && !mapped.closest(PREVIEW)) return mapped;
@@ -692,21 +699,31 @@
   }
 
   function open() {
-    if (stage || opening || track().ad || (document.fullscreenElement && document.fullscreenElement !== root)) return false;
+    const current = track();
+    if (stage || opening || current.ad || (document.fullscreenElement && document.fullscreenElement !== root)) return false;
     opening = true;
-    const full = !document.fullscreenElement && root.requestFullscreen
-      ? root.requestFullscreen().then(() => true, () => false)
-      : Promise.resolve(false);
+    const nativeView = { routeFrom: currentPath(), clickedLyrics: false };
+    // Expand Spotify's own lyrics before entering fullscreen. Mounting the
+    // native lyrics panel can itself change the desktop client's view state.
+    if (current.title || current.uri || durationMs() > 0) openNativeLyrics(nativeView);
+    const full = new Promise((resolve) => requestAnimationFrame(() => {
+      if (document.fullscreenElement || !root.requestFullscreen) resolve(false);
+      else root.requestFullscreen().then(() => resolve(true), () => resolve(false));
+    }));
     full.then((entered) => {
       opening = false;
       if (track().ad) {
+        leaveNativeLyrics(nativeView);
         if (entered && document.fullscreenElement === root) document.exitFullscreen().catch(() => {});
         return;
       }
       playbar.active = true;
-      try { render(entered); } catch (error) {
+      try { render(entered, nativeView); } catch (error) {
         if (stage) dispose(stage);
-        else if (entered && document.fullscreenElement === root) document.exitFullscreen().catch(() => {});
+        else {
+          leaveNativeLyrics(nativeView);
+          if (entered && document.fullscreenElement === root) document.exitFullscreen().catch(() => {});
+        }
         playbar.active = false;
         console.warn(TITLE, error);
       }
