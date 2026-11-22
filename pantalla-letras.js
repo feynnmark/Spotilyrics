@@ -1,5 +1,5 @@
 // NAME: Letras en pantalla
-// VERSION: 1.2.0
+// VERSION: 1.3.0
 // DESCRIPTION: Letras nativas, portadas y controles en pantalla completa.
 
 (() => {
@@ -16,7 +16,6 @@
   const NATIVE_LYRICS = 'button[data-testid="lyrics-button"], button.main-nowPlayingBar-lyricsButton';
   const WIDGET = '[data-testid="now-playing-widget-v2"], [data-testid="now-playing-widget"], .main-nowPlayingWidget-nowPlaying';
   const TRACK_LINK = '[data-testid="context-item-link"], a[href^="/track/"], a[href^="/episode/"]';
-  const ARTIST_LINK = '[data-testid="context-item-info-artist"], a[href^="/artist/"], a[href^="/show/"]';
   const SOURCE = '.lyrics-lyrics-container, [data-testid="lyrics-container"], .lyrics-lyrics-contentWrapper';
   const LINE = '.lyrics-lyricsContent-lyric, [data-testid="lyrics-line"]';
   const TEXT = ".lyrics-lyricsContent-text";
@@ -31,6 +30,7 @@
     next: '<path d="M19 6v12M5 6l9 6-9 6Z" fill="currentColor"/>',
     play: '<path d="m9 5 11 7-11 7Z" fill="currentColor"/>',
     pause: '<path d="M9 5v14m6-14v14" stroke-width="3"/>',
+    volume: '<path d="M4 9h4l5-4v14l-5-4H4zm12-.5a5 5 0 0 1 0 7m2.5-10a9 9 0 0 1 0 13"/>',
     tune: '<path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="2" fill="var(--lep-bg)"/><circle cx="15" cy="17" r="2" fill="var(--lep-bg)"/>',
   };
   const icon = (name, size = 22) => '<svg width="' + size + '" height="' + size + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + DRAWINGS[name] + '</svg>';
@@ -80,10 +80,27 @@
     const before = settings.layout;
     if (layout === before) return;
     const elements = [state.ui.cover.parentElement, state.ui.lyrics];
-    const animate = settings.motion && motionPreference.matches && typeof elements[0].animate === "function";
+    const animate = canAnimate(elements[0]);
     const oldBounds = animate ? elements.map((element) => element.getBoundingClientRect()) : [];
+    const exitBounds = animate && state.coverExit?.node.getBoundingClientRect();
     state.layoutAnimations.forEach((animation) => animation.cancel());
     state.layoutAnimations = [];
+    clearCoverExit(state);
+    if (animate && layout === "lyrics") {
+      const [bounds] = oldBounds;
+      const copy = elements[0].cloneNode(false);
+      if (!state.ui.cover.hidden) copy.append(coverCopy(state.ui.cover));
+      copy.classList.add("lep-cover-ghost");
+      copy.setAttribute("aria-hidden", "true");
+      Object.assign(copy.style, { left: bounds.left + "px", top: bounds.top + "px", width: bounds.width + "px" });
+      state.dialog.append(copy);
+      const animation = copy.animate([
+        { transform: "none", opacity: 1 },
+        { transform: "translateX(" + (-bounds.right - 32) + "px)", opacity: 0.24 },
+      ], { duration: 450, easing: "cubic-bezier(.42,0,.65,1)" });
+      state.coverExit = { node: copy, animation };
+      animation.onfinish = () => clearCoverExit(state);
+    }
     settings.layout = layout;
     saveSettings();
     if (layout === "cover") stopWatching(state);
@@ -93,17 +110,36 @@
 
     for (const [i, element] of elements.entries()) {
       const next = element.getBoundingClientRect();
-      const old = oldBounds[i];
+      const old = i === 0 && exitBounds ? exitBounds : oldBounds[i];
       if (!next.width || !next.height) continue;
       const entering = !old.width || !old.height;
-      const horizontal = entering ? 12 : old.left - next.left;
-      const vertical = entering ? 8 : old.top - next.top;
+      const horizontal = entering ? (i === 0 ? -next.right - 32 : 30) : old.left - next.left;
+      const vertical = entering ? 0 : old.top - next.top;
       const scale = i === 0 && !entering ? old.width / next.width : 1;
       state.layoutAnimations.push(element.animate([
         { transformOrigin: "top left", transform: "translate(" + horizontal + "px," + vertical + "px) scale(" + scale + ")", opacity: entering ? 0 : 0.82 },
         { transformOrigin: "top left", transform: "none", opacity: 1 },
-      ], { duration: 300, easing: "cubic-bezier(.22,.61,.36,1)" }));
+      ], { duration: i === 0 ? 450 : 340, easing: "cubic-bezier(.22,.61,.36,1)" }));
     }
+  }
+
+  function canAnimate(element) {
+    return !document.hidden && settings.motion && motionPreference.matches && typeof element.animate === "function";
+  }
+
+  function clearCoverExit(state) {
+    state.coverExit?.animation.cancel();
+    state.coverExit?.node.remove();
+    state.coverExit = null;
+  }
+
+  function coverCopy(image) {
+    const copy = image.cloneNode();
+    copy.removeAttribute("data-ui");
+    copy.removeAttribute("aria-description");
+    copy.setAttribute("aria-hidden", "true");
+    copy.alt = "";
+    return copy;
   }
 
   function revealControls(state, event) {
@@ -117,7 +153,7 @@
     function hideWhenIdle() {
       state.idleTimer = 0;
       if (stage !== state || !state.dialog.open || document.hidden ||
-          state.keyboard || !state.ui.options.hidden || state.seeking) return;
+          state.keyboard || !state.ui.options.hidden || state.seeking || state.adjustingVolume) return;
       const remaining = IDLE_MS - (performance.now() - state.lastInput);
       if (remaining > 0) state.idleTimer = setTimeout(hideWhenIdle, remaining);
       else state.dialog.dataset.idle = "true";
@@ -139,10 +175,6 @@
       /\/album\/([a-z0-9]{22})(?:[/?#]|$)/i.exec(link?.getAttribute("href") || "");
     const title = meta.title || item?.name || item?.title || widgetTitle || media?.title || "";
     const mediaMatches = !title || !media?.title || title === media.title;
-    const artists = item?.artists?.map?.((artist) => artist?.name).filter(Boolean).join(", ") ||
-      Object.keys(meta).filter((key) => /^artist_name(?::\d+)?$/.test(key)).map((key) => meta[key]).filter(Boolean).join(", ") ||
-      (widget && [...widget.querySelectorAll(ARTIST_LINK)].map((node) => node.textContent.trim()).filter(Boolean).join(", ")) ||
-      (mediaMatches ? media?.artist : "") || "";
     const widgetCover = widget?.querySelector('img[data-testid="cover-art-image"], [data-testid="cover-art-image"] img, img');
     const mediaArt = mediaMatches ? [...(media?.artwork ?? [])].reverse().map(({ src }) => src) : [];
     const albumArt = [...(item?.album?.images ?? [])].sort((a, b) => (b.width || 0) - (a.width || 0)).map(({ url }) => url);
@@ -150,7 +182,7 @@
       widgetCover?.currentSrc, widgetCover?.src].map(artwork).find(Boolean) || "";
     const ad = states.some((state) => state.is_ad || state.isAd) || /^spotify:ad(?::|$)/.test(uri) ||
       item?.type === "ad" || meta.entity_type === "ad" || [meta.is_ad, meta.is_advertisement].some((value) => value === true || value === "true");
-    return { uri, ad, title, artists, art, albumId: album?.[1] || "" };
+    return { uri, ad, title, art, albumId: album?.[1] || "" };
   }
 
   function artwork(value) {
@@ -171,35 +203,105 @@
     return albumImage ? "https://i.scdn.co/image/ab67616d0000b273" + albumImage[1] : url.href;
   }
 
-  async function tryAlbumCover(state) {
-    const albumId = state.track?.albumId;
-    if (!albumId || state.coverAlbum === albumId) return;
-    state.coverAlbum = albumId;
+  async function albumArtwork(albumId, signal) {
+    if (!albumId) return "";
     const request = new URL("https://open.spotify.com/oembed");
     request.searchParams.set("url", "https://open.spotify.com/album/" + albumId);
     try {
       const response = await fetch(request, {
         credentials: "omit",
         referrerPolicy: "no-referrer",
-        signal: state.controller.signal,
+        signal: AbortSignal.any ? AbortSignal.any([signal, AbortSignal.timeout(2200)]) : signal,
       });
-      if (!response.ok) return;
-      const result = await response.json();
-      const thumbnail = artwork(result.thumbnail_url);
-      if (!thumbnail || stage !== state || state.track?.albumId !== albumId) return;
-      const cover = fullSizeCover(thumbnail);
-      if (state.ui.cover.src !== cover) {
-        state.ui.cover.crossOrigin = "anonymous";
-        state.ui.cover.src = cover;
+      if (response.ok) {
+        const thumbnail = artwork((await response.json()).thumbnail_url);
+        if (thumbnail) return fullSizeCover(thumbnail);
       }
-    } catch {
-      // The native artwork stays usable when Spotify does not return a larger image.
+    } catch { /* The native artwork remains available. */ }
+    return "";
+  }
+
+  async function decodeArtwork(source, signal, cors = true) {
+    if (!source || signal.aborted) return null;
+    const image = new Image();
+    if (cors) image.crossOrigin = "anonymous";
+    image.referrerPolicy = "no-referrer";
+    image.decoding = "async";
+    image.src = source;
+    try { await image.decode(); } catch { return null; }
+    return signal.aborted ? null : image;
+  }
+
+  async function updateCover(state, current, direction) {
+    state.coverRequest?.abort();
+    const { signal } = (state.coverRequest = new AbortController());
+    const key = current.art + "|" + current.albumId;
+    const existing = state.ui.cover;
+    if (key === state.coverKey && !existing.hidden) {
+      slideCover(state, existing, existing, direction);
+      return;
     }
+
+    const source = current.art && fullSizeCover(current.art);
+    let image = await decodeArtwork(source, signal);
+    if (!image && current.art !== source) image = await decodeArtwork(current.art, signal);
+    if (signal.aborted) return;
+    if (!image || image.naturalWidth < 512) {
+      const alternate = await albumArtwork(current.albumId, signal);
+      if (alternate && alternate !== source) {
+        const larger = await decodeArtwork(alternate, signal);
+        if (larger && (!image || larger.naturalWidth > image.naturalWidth)) image = larger;
+      }
+    }
+    if (!image) image = await decodeArtwork(current.art, signal, false);
+    if (stage !== state || signal.aborted) return;
+
+    if (!image) {
+      existing.hidden = true;
+      existing.removeAttribute("src");
+      state.ui.ambient.removeAttribute("data-texture");
+      state.dialog.style.removeProperty("--lep-art-main");
+      state.dialog.style.removeProperty("--lep-art-secondary");
+      delete state.dialog.dataset.colors;
+      return;
+    }
+    state.coverKey = key;
+    image.dataset.ui = "cover";
+    image.alt = "Carátula del álbum";
+    image.setAttribute("aria-description", image.naturalWidth + " × " + image.naturalHeight + " píxeles");
+    slideCover(state, existing, image, direction);
+    setAmbient(state, image);
+  }
+
+  function slideCover(state, previous, image, direction) {
+    clearCoverSlide(state);
+    const frame = previous.parentElement;
+    const animate = direction && !previous.hidden && !state.ui.track.hidden && canAnimate(frame);
+    const outgoing = animate && coverCopy(previous);
+    if (previous !== image) previous.replaceWith(image);
+    state.ui.cover = image;
+    if (!outgoing) return;
+
+    outgoing.classList.add("lep-cover-outgoing");
+    frame.prepend(outgoing);
+    const shift = (value) => "translateX(" + value * 100 + "%)";
+    const timing = { duration: 420, easing: "cubic-bezier(.32,.05,.2,1)" };
+    const exit = outgoing.animate([{ transform: "none" }, { transform: shift(-direction) }], timing);
+    const enter = image.animate([{ transform: shift(direction) }, { transform: "none" }], timing);
+    state.coverSlide = { node: outgoing, exit, enter };
+    exit.onfinish = () => clearCoverSlide(state);
+  }
+
+  function clearCoverSlide(state) {
+    state.coverSlide?.exit.cancel();
+    state.coverSlide?.enter.cancel();
+    state.coverSlide?.node.remove();
+    state.coverSlide = null;
   }
 
   function setAmbient(state, cover) {
-    if (stage !== state || !cover.naturalWidth) return;
-    cover.hidden = false;
+    const { ambient, texture } = state.ui;
+    ambient.removeAttribute("data-texture");
     const canvas = document.createElement("canvas");
     const size = 16;
     canvas.width = size;
@@ -214,6 +316,14 @@
       // Some artwork hosts allow display without granting pixel access.
       return;
     }
+    const blurred = texture.getContext("2d");
+    if (blurred) {
+      const size = texture.width;
+      blurred.clearRect(0, 0, size, size);
+      blurred.filter = "blur(3px) saturate(1.35)";
+      blurred.drawImage(cover, -9, -9, size + 18, size + 18);
+      ambient.dataset.texture = "true";
+    }
     const swatches = [
       averageColor(pixels, 0, size / 2),
       averageColor(pixels, size / 2, size),
@@ -222,13 +332,12 @@
       "hsl(" + hue + " " + Math.max(12, saturation) + "% " + (index ? 24 : 33) + "%)");
     const dialog = state.dialog;
     const signature = colors.join("/");
-    if (dialog.dataset.colors === signature) return;
     dialog.dataset.colors = signature;
     dialog.style.setProperty("--lep-art-main", colors[0]);
     dialog.style.setProperty("--lep-art-secondary", colors[1]);
     state.artworkAnimation?.cancel();
-    if (settings.palette === "album" && settings.motion && motionPreference.matches && state.ui.ambient.animate) {
-      state.artworkAnimation = state.ui.ambient.animate([{ opacity: 0.65 }, { opacity: 1 }], {
+    if (settings.palette === "album" && blurred && canAnimate(texture)) {
+      state.artworkAnimation = texture.animate([{ opacity: 0.15 }, { opacity: 1 }], {
         duration: 420,
         easing: "ease-out",
       });
@@ -263,7 +372,9 @@
     dialog.id = "lep-dialog";
     dialog.setAttribute("aria-labelledby", "lep-title");
     dialog.innerHTML = `
-      <div class="lep-ambient" data-ui="ambient" aria-hidden="true"></div>
+      <div class="lep-ambient" data-ui="ambient" aria-hidden="true">
+        <canvas class="lep-texture" data-ui="texture" width="48" height="48"></canvas>
+      </div>
       <header class="lep-header">
         <h1 id="lep-title" class="lep-sr">Letras en pantalla</h1>
         <fieldset class="lep-layout lep-glass" data-ui="layout">
@@ -290,8 +401,9 @@
         </section>
       </div>
       <footer class="lep-dock lep-glass">
-        <div class="lep-identity">
-          <h2 data-ui="title"></h2><p data-ui="artist"></p>
+        <div class="lep-volume">
+          ${icon("volume", 20)}
+          <input type="range" min="0" max="100" value="0" step="1" data-ui="volume" aria-label="Volumen" disabled>
         </div>
         <div class="lep-playback">
           <div class="lep-transport" aria-label="Controles de reproducción">
@@ -334,22 +446,21 @@
       if (settings.follow) highlight(state, true);
     });
     on(ui.exit, "click", () => dialog.close());
-    on(ui.back, "click", () => player.back());
+    on(ui.back, "click", () => skip(state, -1));
     on(ui.play, "click", () => player.togglePlay());
-    on(ui.next, "click", () => player.next());
+    on(ui.next, "click", () => skip(state, 1));
     on(ui.layout, "change", (event) => switchLayout(state, event.target.value));
-    on(ui.cover, "load", () => {
-      setAmbient(state, ui.cover);
-      ui.cover.setAttribute("aria-description", ui.cover.naturalWidth + " × " + ui.cover.naturalHeight + " píxeles");
-      if (ui.cover.naturalWidth < 512) tryAlbumCover(state);
+    on(ui.volume, "pointerenter", () => syncVolume(state));
+    on(ui.volume, "pointerdown", () => { state.adjustingVolume = true; });
+    for (const type of ["pointerup", "pointercancel"]) on(document, type, () => {
+      if (!state.adjustingVolume) return;
+      state.adjustingVolume = false;
+      revealControls(state);
     });
-    on(ui.cover, "error", () => {
-      if (state.track?.art && ui.cover.src !== state.track.art) {
-        ui.cover.src = state.track.art;
-      } else if (ui.cover.hasAttribute("crossorigin") && state.track?.art) {
-        ui.cover.removeAttribute("crossorigin");
-        ui.cover.src = state.track.art;
-      } else ui.cover.hidden = true;
+    on(ui.volume, "focus", () => syncVolume(state));
+    on(ui.volume, "input", () => {
+      ui.volume.setAttribute("aria-valuetext", ui.volume.value + "%");
+      try { player.setVolume(ui.volume.valueAsNumber / 100); } catch { syncVolume(state); }
     });
     on(ui.position, "input", () => {
       state.seeking = true;
@@ -394,6 +505,12 @@
 
     state.onSong = (event) => changeTrack(state, event?.data);
     state.onPlayback = () => updateClock(state);
+    const volumeEvents = globalThis.Spicetify?.Platform?.PlaybackAPI?._events;
+    if (typeof volumeEvents?.removeListener === "function") {
+      const onVolume = (event) => syncVolume(state, event?.data?.volume);
+      volumeEvents.addListener?.("volume", onVolume);
+      state.controller.signal.addEventListener("abort", () => volumeEvents.removeListener("volume", onVolume), { once: true });
+    }
     player.addEventListener("songchange", state.onSong);
     player.addEventListener("onplaypause", state.onPlayback);
     player.addEventListener("onprogress", state.onPlayback);
@@ -406,6 +523,9 @@
     on(document, "visibilitychange", () => {
       dialog.dataset.inactive = String(document.hidden);
       if (document.hidden) {
+        clearCoverSlide(state);
+        clearCoverExit(state);
+        state.adjustingVolume = false;
         stopWatching(state);
         stopWatchingMetadata(state);
         clearTimeout(state.idleTimer);
@@ -422,6 +542,7 @@
     });
     document.body.append(dialog);
     applySettings();
+    syncVolume(state);
     changeTrack(state);
     if (stage === state) {
       dialog.showModal();
@@ -464,7 +585,10 @@
     stopWatching(state);
     stopWatchingMetadata(state);
     state.artworkAnimation?.cancel();
+    state.coverRequest?.abort();
     state.layoutAnimations.forEach((animation) => animation.cancel());
+    clearCoverExit(state);
+    clearCoverSlide(state);
     player.removeEventListener("songchange", state.onSong);
     player.removeEventListener("onplaypause", state.onPlayback);
     player.removeEventListener("onprogress", state.onPlayback);
@@ -482,23 +606,16 @@
     }
     const old = state.track;
     const { ui } = state;
+    const swapped = old && (old.uri && current.uri ? old.uri !== current.uri :
+      old.title && current.title && old.title !== current.title);
     state.track = current;
-    if (!old || old.title !== current.title || old.artists !== current.artists) {
-      ui.title.textContent = current.title || (durationMs() > 0 ? "Pista en reproducción" : "Sin reproducción");
-      ui.artist.textContent = current.artists;
-    }
-    if (!old || old.art !== current.art) {
-      ui.cover.hidden = true;
-      if (current.art) {
-        ui.cover.crossOrigin = "anonymous";
-        ui.cover.src = fullSizeCover(current.art);
-      } else {
-        ui.cover.removeAttribute("src");
-        state.dialog.style.removeProperty("--lep-art-main");
-        state.dialog.style.removeProperty("--lep-art-secondary");
-        delete state.dialog.dataset.colors;
-        tryAlbumCover(state);
+    if (!old || swapped || old.art !== current.art || old.albumId !== current.albumId) {
+      const direction = swapped ? trackDirection(state, current.uri) : 0;
+      if (swapped) {
+        state.lastTrackUri = old.uri;
+        state.neighbors = null;
       }
+      updateCover(state, current, direction);
     }
     if (!old || old.uri !== current.uri || (!old.uri && old.title !== current.title) ||
         (!old.title && current.title)) {
@@ -516,6 +633,20 @@
       watchLyrics(state);
     }
     updateClock(state);
+  }
+
+  function skip(state, direction) {
+    state.skip = { direction, expires: performance.now() + 1800 };
+    if (direction < 0) player.back();
+    else player.next();
+  }
+
+  function trackDirection(state, uri) {
+    const skip = state.skip;
+    state.skip = null;
+    if (skip && performance.now() <= skip.expires) return skip.direction;
+    if (!uri || uri === state.neighbors?.next) return 1;
+    return uri === state.neighbors?.previous || uri === state.lastTrackUri ? -1 : 1;
   }
 
   function watchMetadata(state) {
@@ -552,6 +683,19 @@
     catch { return 0; }
   }
 
+  function syncVolume(state, volume) {
+    const { volume: slider } = state.ui;
+    if (state.adjustingVolume || typeof player.setVolume !== "function") return;
+    try { volume ??= player.getVolume?.(); } catch { return; }
+    if (!Number.isFinite(volume)) return;
+    slider.disabled = false;
+    const percent = Math.round(Math.max(0, Math.min(1, volume)) * 100);
+    if (slider.valueAsNumber !== percent || !slider.hasAttribute("aria-valuetext")) {
+      slider.valueAsNumber = percent;
+      slider.setAttribute("aria-valuetext", percent + "%");
+    }
+  }
+
   function updateClock(state) {
     if (document.hidden) return;
     const { ui } = state;
@@ -567,6 +711,12 @@
     const clock = String(seconds) + "/" + duration;
     if (clock === state.clock || state.seeking) return;
     state.clock = clock;
+    syncVolume(state);
+    const queue = globalThis.Spicetify?.Queue;
+    if (queue?.track?.uri && queue.track.uri === state.track?.uri) {
+      const previous = queue.prevTracks;
+      state.neighbors = { previous: previous?.[previous.length - 1]?.uri, next: queue.nextTracks?.[0]?.uri };
+    }
     ui.position.max = String(Math.ceil(duration / 1000));
     ui.position.disabled = !duration;
     ui.position.value = String(seconds);
@@ -690,6 +840,7 @@
     state.previous = null;
     clearTimeout(state.deadline);
     state.deadline = 0;
+    const firstRender = !state.rows.length;
     if (!equal(state.rows)) {
       const fragment = document.createDocumentFragment();
       state.rows = rows.map((row, index) => {
@@ -710,6 +861,10 @@
     ui.lines.dataset.timed = String(rows.some(({ node, target }) => target || node.matches(ACTIVE) || node.querySelector(ACTIVE)));
     ui.status.hidden = true;
     ui.lines.hidden = false;
+    if (firstRender && !settings.follow && ui.lines.dataset.timed === "true") {
+      const leadingSpace = parseFloat(getComputedStyle(ui.lines).paddingBlockStart);
+      ui.scroll.scrollTop = Math.max(0, leadingSpace - ui.scroll.clientHeight * 0.14);
+    }
     const credit = source.querySelector(PROVIDER)?.textContent?.trim() || "";
     ui.credit.textContent = credit;
     ui.credit.hidden = !credit;
@@ -729,7 +884,7 @@
     if (!settings.follow) return;
     const panel = state.ui.scroll;
     const bounds = line.getBoundingClientRect();
-    const top = panel.scrollTop + bounds.top - panel.getBoundingClientRect().top - Math.max(0, (panel.clientHeight - bounds.height) * 0.38);
+    const top = panel.scrollTop + bounds.top - panel.getBoundingClientRect().top - Math.max(0, (panel.clientHeight - bounds.height) * 0.43);
     const smooth = settings.motion && motionPreference.matches && !force;
     panel.scrollTo({ top, behavior: smooth ? "smooth" : "instant" });
   }
@@ -815,6 +970,8 @@
       --lep-wash: var(--lep-art-main, #493968);
       --lep-shade: var(--lep-art-secondary, #29233f);
       --lep-size: clamp(1.85rem, 3.6vw, 4.65rem);
+      --lep-inset: clamp(16px, 5vw, 96px);
+      --lep-edge: clamp(12px, 2.5vw, 38px);
       color-scheme: dark;
       color: var(--lep-ink);
       background: var(--lep-bg);
@@ -824,18 +981,13 @@
       inset: 0;
       margin: 0;
       border: 0;
-      padding: clamp(12px, 2.5vw, 38px) clamp(16px, 5vw, 96px);
+      padding: 0 var(--lep-inset);
       width: 100%;
       height: 100%;
       max-width: none;
       max-height: none;
       overflow: hidden;
       font: 500 16px/1.4 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
-    }
-    #lep-dialog[open] {
-      display: grid;
-      grid-template-rows: auto minmax(0, 1fr) auto;
-      gap: clamp(10px, 2vh, 30px);
     }
     #lep-dialog:modal, #lep-dialog::backdrop { overscroll-behavior: contain; }
     #lep-dialog::backdrop { background: #0e0e17; overflow: hidden; }
@@ -868,6 +1020,16 @@
         radial-gradient(ellipse at 76% 23%, var(--lep-shade), transparent 69%),
         var(--lep-bg);
     }
+    #lep-dialog .lep-texture {
+      display: none; position: absolute; inset: -17%; width: 134%; height: 134%; object-fit: cover;
+      transform: none;
+    }
+    #lep-dialog[data-palette="album"] .lep-ambient[data-texture] .lep-texture { display: block; }
+    #lep-dialog[data-palette="album"] .lep-ambient[data-texture]::after {
+      content: ""; position: absolute; inset: 0;
+      background: radial-gradient(ellipse at 24% 54%, #100f1d14 5%, #100f1d70 100%),
+        linear-gradient(90deg, #0c0b1524, #0d0b18a6);
+    }
     #lep-dialog .lep-glass {
       background: linear-gradient(164deg, #ffffff22, #ffffff06), #11111c82;
       border: 1px solid #ffffff40;
@@ -879,9 +1041,10 @@
     #lep-dialog[data-glass="false"] .lep-glass { background: #171721; box-shadow: none; }
     #lep-dialog .lep-header {
       display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 8px;
+      inset-block-start: var(--lep-edge); inset-inline: var(--lep-inset);
     }
     #lep-dialog :is(.lep-header, .lep-dock) {
-      position: relative; z-index: 1; opacity: 1; translate: 0 0;
+      position: absolute; z-index: 2; opacity: 1; translate: 0 0;
     }
     #lep-dialog[data-idle="true"], #lep-dialog[data-idle="true"] * { cursor: none; }
     #lep-dialog[data-idle="true"] :is(.lep-header, .lep-dock) {
@@ -908,34 +1071,40 @@
     #lep-dialog .lep-play { background: #f8f0fb; color: #181423; width: 48px; height: 48px; }
     #lep-dialog .lep-play:hover { background: var(--lep-accent); }
     #lep-dialog .lep-body {
-      min-height: 0; width: min(100%, 1680px); margin-inline: auto; display: grid;
+      height: 100%; width: min(100%, 1680px); margin-inline: auto; display: grid; grid-template-rows: minmax(0, 1fr);
       grid-template-columns: minmax(180px, 0.92fr) minmax(0, 1.08fr); gap: clamp(28px, 6vw, 120px);
     }
     #lep-dialog .lep-track { min-width: 0; min-height: 0; display: grid; place-items: center; }
     #lep-dialog .lep-cover {
-      width: min(100%, 56vh, 650px); aspect-ratio: 1; overflow: hidden;
+      position: relative; width: min(100%, 56vh, 650px); aspect-ratio: 1; overflow: hidden;
       border-radius: clamp(12px, 1.6vw, 26px);
       background: linear-gradient(142deg, #ffffff18, #0b0d1424), var(--lep-shade);
       box-shadow: 0 24px 72px #07071166; outline: 1px solid #ffffff35; outline-offset: -1px;
     }
-    #lep-dialog .lep-cover img { width: 100%; height: 100%; object-fit: contain; display: block; }
+    #lep-dialog .lep-cover img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
+    #lep-dialog .lep-cover.lep-cover-ghost { position: absolute; z-index: 1; pointer-events: none; }
     #lep-dialog[data-layout="cover"] .lep-body, #lep-dialog[data-layout="lyrics"] .lep-body { grid-template-columns: minmax(0, 1fr); }
     #lep-dialog[data-layout="cover"] .lep-cover { width: min(100%, 63vh, 760px); }
     #lep-dialog[data-layout="lyrics"] .lep-lyrics { width: min(100%, 960px); margin: 0 auto; }
     #lep-dialog .lep-lyrics {
-      min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto;
+      position: relative; min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr);
+      container-type: size;
     }
     #lep-dialog .lep-scroll {
+      --lep-lyric-mask: linear-gradient(to bottom, transparent, black 12%, black 78%, transparent);
       overflow: auto; overscroll-behavior: contain; scrollbar-width: none;
-      padding: 6px clamp(4px, 1.5vw, 24px);
+      padding-inline: clamp(6px, 1.5vw, 24px);
+      -webkit-mask-image: var(--lep-lyric-mask);
+      mask-image: var(--lep-lyric-mask);
     }
+    #lep-dialog .lep-lyrics:has(.lep-scroll:focus-visible) { outline: 2px solid var(--lep-accent); outline-offset: -2px; }
     #lep-dialog .lep-scroll::-webkit-scrollbar { display: none; }
-    #lep-dialog .lep-lines { padding-block: min(23vh, 190px) min(46vh, 440px); display: grid; gap: clamp(13px, 2.3vh, 30px); }
-    #lep-dialog .lep-lines[data-timed="false"] { padding-block: clamp(14px, 5vh, 74px); }
+    #lep-dialog .lep-lines { padding-block: 43vh 57vh; padding-block: 43cqh 57cqh; display: grid; gap: clamp(13px, 2.3vh, 30px); }
+    #lep-dialog .lep-lines[data-timed="false"] { padding-block: max(12vh, 50px) max(15vh, 76px); }
     #lep-dialog :is(button, p).lep-line {
       position: relative; text-align: start; background: transparent; border-radius: 6px;
       color: var(--lep-quiet); font: 720 var(--lep-size)/1.13 "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
-      letter-spacing: -0.048em; overflow-wrap: anywhere; padding: 4px 0 4px clamp(9px, 1.2vw, 20px); text-wrap: pretty;
+      letter-spacing: -0.048em; overflow-wrap: anywhere; padding: 4px 0; text-wrap: pretty;
     }
     #lep-dialog button.lep-line:hover { color: var(--lep-muted); }
     #lep-dialog .lep-lines[data-timed="true"] .lep-line:not([aria-current="true"], :hover, :focus-visible) {
@@ -943,21 +1112,19 @@
       text-shadow: 0 0 0.062em var(--lep-quiet);
     }
     #lep-dialog :is(button, p).lep-line[aria-current="true"], #lep-dialog [data-timed="false"] :is(button, p).lep-line { color: var(--lep-ink); }
-    #lep-dialog .lep-line[aria-current="true"]::before {
-      content: ""; position: absolute; inset-block: 16%; inset-inline-start: 0;
-      width: 3px; border-radius: 4px; background: var(--lep-accent);
-    }
     #lep-dialog .lep-status { padding-block: min(18vh, 145px); color: var(--lep-muted); max-width: 33ch; font-size: clamp(1rem, 1.8vw, 1.45rem); }
-    #lep-dialog .lep-credit { color: var(--lep-muted); font-size: 0.75rem; padding: 8px clamp(4px, 1.5vw, 24px) 0; }
+    #lep-dialog .lep-credit { position: absolute; bottom: 3px; right: 0; color: var(--lep-muted); font-size: 0.69rem; pointer-events: none; }
     #lep-dialog .lep-dock {
-      justify-self: center; width: min(100%, 1120px); border-radius: 26px; padding: 8px clamp(12px, 2vw, 28px);
+      inset-inline: 0; inset-block-end: var(--lep-edge); margin-inline: auto;
+      width: min(calc(100% - 2 * var(--lep-inset)), 960px); border-radius: 26px; padding: 8px clamp(12px, 2vw, 28px);
       display: grid; align-items: center;
       grid-template-columns: minmax(0, 1fr) minmax(200px, 1.65fr) minmax(0, 1fr); gap: clamp(10px, 2vw, 28px);
     }
-    #lep-dialog .lep-identity { min-width: 0; }
-    #lep-dialog .lep-identity h2 { font-size: clamp(1rem, 1.35vw, 1.22rem); font-weight: 730; }
-    #lep-dialog .lep-identity p { color: var(--lep-muted); font-size: 0.85rem; }
-    #lep-dialog .lep-identity :is(h2,p) { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    #lep-dialog .lep-volume {
+      min-width: 0; display: flex; align-items: center; gap: 8px; color: var(--lep-muted); grid-column: 1;
+    }
+    #lep-dialog .lep-volume svg { flex: none; }
+    #lep-dialog .lep-volume input { margin: 0; min-width: 0; width: min(100%, 122px); height: 30px; cursor: pointer; }
     #lep-dialog .lep-playback { min-width: 0; display: grid; gap: 4px; }
     #lep-dialog .lep-transport { display: flex; align-items: center; justify-content: center; gap: 10px; }
     #lep-dialog .lep-position {
@@ -966,11 +1133,11 @@
     }
     #lep-dialog .lep-position input { margin: 0; min-width: 0; width: 100%; cursor: pointer; }
     #lep-dialog .lep-follow {
-      justify-self: end; display: flex; align-items: center; gap: 6px; min-height: 44px;
+      grid-column: 3; justify-self: end; display: flex; align-items: center; gap: 6px; min-height: 44px;
       font-size: 0.82rem; color: var(--lep-muted); cursor: pointer;
     }
     #lep-dialog .lep-options {
-      position: absolute; z-index: 1; inset-block-start: clamp(64px, 9vh, 110px);
+      position: absolute; z-index: 3; inset-block-start: clamp(64px, 9vh, 110px);
       inset-inline-end: clamp(16px, 5vw, 96px); width: min(calc(100% - 32px), 350px);
       padding: 18px; background-color: #171622e8; border-radius: 20px; display: grid; gap: 12px;
     }
@@ -992,28 +1159,30 @@
       html[data-lep-motion="true"] #lep-dialog[data-idle="true"] .lep-header { translate: 0 -8px; }
       html[data-lep-motion="true"] #lep-dialog[data-idle="true"] .lep-dock { translate: 0 10px; }
       #lep-dialog[data-drift="true"] .lep-ambient::before { animation: lep-drift 32s ease-in-out infinite alternate; }
-      #lep-dialog[data-inactive="true"] .lep-ambient::before { animation-play-state: paused; }
+      #lep-dialog[data-palette="album"][data-drift="true"] .lep-ambient[data-texture]::before { animation: none; }
+      #lep-dialog[data-drift="true"] .lep-texture { animation: lep-art-drift 24s ease-in-out infinite alternate; }
+      #lep-dialog[data-inactive="true"] .lep-ambient::before,
+      #lep-dialog[data-inactive="true"] .lep-texture { animation-play-state: paused; }
     }
     @keyframes lep-drift {
       0% { translate: -2% 1%; scale: 1.02; }
       52% { translate: 3% -2%; scale: 1.09; }
       100% { translate: 1% 3%; scale: 1.04; }
     }
-    @media (forced-colors: active) {
-      #lep-dialog .lep-lines[data-timed="true"] .lep-line:not([aria-current="true"], :hover, :focus-visible) {
-        color: CanvasText; text-shadow: none;
-      }
+    @keyframes lep-art-drift {
+      0% { transform: translate(-5%, 3%) rotate(-6deg) skewX(-4deg) scale(1.03, 1.12); }
+      48% { transform: translate(4%, -5%) rotate(6deg) skewX(4deg) scale(1.21, 1.05); }
+      100% { transform: translate(5%, 4%) rotate(-3deg) skewX(-5deg) scale(1.07, 1.25); }
     }
     @media (max-width: 720px) {
       #lep-dialog .lep-header { grid-template-columns: auto 1fr; }
       #lep-dialog .lep-layout { grid-column: 1; justify-self: start; }
       #lep-dialog .lep-actions { grid-column: 2; }
       #lep-dialog .lep-body { gap: 8px; }
-      #lep-dialog[data-layout="both"] .lep-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+      #lep-dialog[data-layout="both"] .lep-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); padding-top: calc(var(--lep-edge) + 52px); }
       #lep-dialog[data-layout="both"] .lep-cover { width: min(45vw, 27vh); border-radius: 12px; }
-      #lep-dialog .lep-lines { padding-block: 6vh 40vh; }
+      #lep-dialog .lep-scroll { --lep-lyric-mask: linear-gradient(to bottom, transparent, black 12%, black 68%, transparent); }
       #lep-dialog .lep-dock { grid-template-columns: minmax(0, 1fr) minmax(0, auto); padding: 8px 14px; gap: 4px; }
-      #lep-dialog .lep-identity { grid-column: 1; }
       #lep-dialog .lep-follow { grid-column: 2; grid-row: 1; font-size: 0.75rem; min-height: 30px; }
       #lep-dialog .lep-playback { grid-column: 1 / -1; }
       #lep-dialog .lep-transport { gap: 4px; }
@@ -1021,6 +1190,12 @@
     }
     @media (max-height: 540px) and (min-width: 721px) {
       #lep-dialog .lep-cover { width: min(100%, 49vh); }
+    }
+    @media (forced-colors: active) {
+      #lep-dialog .lep-scroll { --lep-lyric-mask: none; }
+      #lep-dialog .lep-lines[data-timed="true"] .lep-line:not([aria-current="true"], :hover, :focus-visible) {
+        color: CanvasText; text-shadow: none;
+      }
     }
   `;
 
