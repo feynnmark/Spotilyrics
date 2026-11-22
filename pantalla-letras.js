@@ -117,9 +117,8 @@
   function fullSizeCover(source) {
     const url = new URL(source);
     // Spotify's public album-image service exposes the same image at several sizes.
-    url.pathname = url.pathname.replace(/^\/image\/ab67616d0000(?:4851|1e02)([a-f0-9]{24})$/i,
-      "/image/ab67616d0000b273$1");
-    return url.href;
+    const albumImage = /(?:^|\/)ab67616d[0-9a-f]{8}([0-9a-f]{24})(?:\/|$)/i.exec(url.pathname);
+    return albumImage ? "https://i.scdn.co/image/ab67616d0000b273" + albumImage[1] : url.href;
   }
 
   async function tryAlbumCover(state) {
