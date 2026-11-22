@@ -1,5 +1,5 @@
 // NAME: Letras en pantalla
-// VERSION: 1.3.0
+// VERSION: 1.3.1
 // DESCRIPTION: Letras nativas, portadas y controles en pantalla completa.
 
 (() => {
@@ -16,6 +16,7 @@
   const NATIVE_LYRICS = 'button[data-testid="lyrics-button"], button.main-nowPlayingBar-lyricsButton';
   const WIDGET = '[data-testid="now-playing-widget-v2"], [data-testid="now-playing-widget"], .main-nowPlayingWidget-nowPlaying';
   const TRACK_LINK = '[data-testid="context-item-link"], a[href^="/track/"], a[href^="/episode/"]';
+  const ARTIST_LINK = '[data-testid="context-item-info-artist"], a[href^="/artist/"], a[href^="/show/"]';
   const SOURCE = '.lyrics-lyrics-container, [data-testid="lyrics-container"], .lyrics-lyrics-contentWrapper';
   const LINE = '.lyrics-lyricsContent-lyric, [data-testid="lyrics-line"]';
   const TEXT = ".lyrics-lyricsContent-text";
@@ -79,21 +80,17 @@
   function switchLayout(state, layout) {
     const before = settings.layout;
     if (layout === before) return;
-    const elements = [state.ui.cover.parentElement, state.ui.lyrics];
+    const elements = [state.ui.card, state.ui.lyrics];
     const animate = canAnimate(elements[0]);
     const oldBounds = animate ? elements.map((element) => element.getBoundingClientRect()) : [];
     const exitBounds = animate && state.coverExit?.node.getBoundingClientRect();
     state.layoutAnimations.forEach((animation) => animation.cancel());
     state.layoutAnimations = [];
     clearCoverExit(state);
+    clearCoverSlide(state);
     if (animate && layout === "lyrics") {
       const [bounds] = oldBounds;
-      const copy = elements[0].cloneNode(false);
-      if (!state.ui.cover.hidden) copy.append(coverCopy(state.ui.cover));
-      copy.classList.add("lep-cover-ghost");
-      copy.setAttribute("aria-hidden", "true");
-      Object.assign(copy.style, { left: bounds.left + "px", top: bounds.top + "px", width: bounds.width + "px" });
-      state.dialog.append(copy);
+      const copy = copyCard(state, bounds, "lep-cover-ghost");
       const animation = copy.animate([
         { transform: "none", opacity: 1 },
         { transform: "translateX(" + (-bounds.right - 32) + "px)", opacity: 0.24 },
@@ -133,12 +130,14 @@
     state.coverExit = null;
   }
 
-  function coverCopy(image) {
-    const copy = image.cloneNode();
+  function copyCard(state, bounds, className) {
+    const copy = state.ui.card.cloneNode(true);
     copy.removeAttribute("data-ui");
-    copy.removeAttribute("aria-description");
     copy.setAttribute("aria-hidden", "true");
-    copy.alt = "";
+    for (const child of copy.querySelectorAll("[data-ui]")) child.removeAttribute("data-ui");
+    copy.classList.add("lep-card-copy", className);
+    Object.assign(copy.style, { left: bounds.left + "px", top: bounds.top + "px", width: bounds.width + "px" });
+    state.dialog.append(copy);
     return copy;
   }
 
@@ -161,9 +160,8 @@
   }
 
   function track(eventState) {
-    const states = [eventState, player.origin?._state, player.data].filter(Boolean);
-    const items = states.map((state) => state.item || state.track || state.currentTrack).filter(Boolean);
-    const item = items[0];
+    const states = [eventState, player.data, player.origin?._state].filter(Boolean);
+    const item = states.map((state) => state.item || state.track || state.currentTrack).find(Boolean);
     const meta = item?.metadata ?? {};
     const widget = document.querySelector(WIDGET);
     const link = widget?.querySelector(TRACK_LINK) || widget?.querySelector('a[href^="/album/"]');
@@ -175,6 +173,11 @@
       /\/album\/([a-z0-9]{22})(?:[/?#]|$)/i.exec(link?.getAttribute("href") || "");
     const title = meta.title || item?.name || item?.title || widgetTitle || media?.title || "";
     const mediaMatches = !title || !media?.title || title === media.title;
+    const artistLinks = !widgetTitle || widgetTitle === title ? [...(widget?.querySelectorAll(ARTIST_LINK) ?? [])] : [];
+    const artists = item?.artists?.map?.((artist) => artist?.name).filter(Boolean).join(", ") ||
+      Object.keys(meta).filter((key) => /^artist_name(?::\d+)?$/.test(key)).map((key) => meta[key]).filter(Boolean).join(", ") ||
+      [...new Set(artistLinks.map((node) => node.textContent.trim()).filter(Boolean))].join(", ") ||
+      (mediaMatches ? media?.artist : "") || "";
     const widgetCover = widget?.querySelector('img[data-testid="cover-art-image"], [data-testid="cover-art-image"] img, img');
     const mediaArt = mediaMatches ? [...(media?.artwork ?? [])].reverse().map(({ src }) => src) : [];
     const albumArt = [...(item?.album?.images ?? [])].sort((a, b) => (b.width || 0) - (a.width || 0)).map(({ url }) => url);
@@ -182,7 +185,7 @@
       widgetCover?.currentSrc, widgetCover?.src].map(artwork).find(Boolean) || "";
     const ad = states.some((state) => state.is_ad || state.isAd) || /^spotify:ad(?::|$)/.test(uri) ||
       item?.type === "ad" || meta.entity_type === "ad" || [meta.is_ad, meta.is_advertisement].some((value) => value === true || value === "true");
-    return { uri, ad, title, art, albumId: album?.[1] || "" };
+    return { uri, ad, title, artists, art, albumId: album?.[1] || "" };
   }
 
   function artwork(value) {
@@ -232,17 +235,17 @@
     return signal.aborted ? null : image;
   }
 
-  async function updateCover(state, current, direction) {
+  async function updateCover(state, current) {
     state.coverRequest?.abort();
     const { signal } = (state.coverRequest = new AbortController());
-    const key = current.art + "|" + current.albumId;
+    const source = current.art && fullSizeCover(current.art);
+    const key = source + "|" + current.albumId;
     const existing = state.ui.cover;
     if (key === state.coverKey && !existing.hidden) {
-      slideCover(state, existing, existing, direction);
+      paintTrackCard(state);
       return;
     }
 
-    const source = current.art && fullSizeCover(current.art);
     let image = await decodeArtwork(source, signal);
     if (!image && current.art !== source) image = await decodeArtwork(current.art, signal);
     if (signal.aborted) return;
@@ -257,8 +260,8 @@
     if (stage !== state || signal.aborted) return;
 
     if (!image) {
-      existing.hidden = true;
-      existing.removeAttribute("src");
+      paintTrackCard(state, null);
+      state.coverKey = "";
       state.ui.ambient.removeAttribute("data-texture");
       state.dialog.style.removeProperty("--lep-art-main");
       state.dialog.style.removeProperty("--lep-art-secondary");
@@ -269,25 +272,39 @@
     image.dataset.ui = "cover";
     image.alt = "Carátula del álbum";
     image.setAttribute("aria-description", image.naturalWidth + " × " + image.naturalHeight + " píxeles");
-    slideCover(state, existing, image, direction);
+    paintTrackCard(state, image);
     setAmbient(state, image);
   }
 
-  function slideCover(state, previous, image, direction) {
-    clearCoverSlide(state);
-    const frame = previous.parentElement;
-    const animate = direction && !previous.hidden && !state.ui.track.hidden && canAnimate(frame);
-    const outgoing = animate && coverCopy(previous);
-    if (previous !== image) previous.replaceWith(image);
-    state.ui.cover = image;
-    if (!outgoing) return;
+  function updateCaption(state) {
+    const { title, artists } = state.track;
+    for (const [node, value] of [[state.ui.title, title], [state.ui.artist, artists]]) {
+      if (node.textContent !== value) node.textContent = value;
+      node.hidden = !value;
+    }
+    state.ui.caption.hidden = !title && !artists;
+  }
 
-    outgoing.classList.add("lep-cover-outgoing");
-    frame.prepend(outgoing);
+  function paintTrackCard(state, image) {
+    const { card, cover, track, caption } = state.ui;
+    const direction = state.slideDirection;
+    clearTimeout(state.slideTimer);
+    state.slideDirection = 0;
+    const animate = direction && !track.hidden && (!cover.hidden || !caption.hidden) && canAnimate(card);
+    const outgoing = animate && copyCard(state, card.getBoundingClientRect(), "lep-cover-outgoing");
+    if (image) {
+      cover.replaceWith(image);
+      state.ui.cover = image;
+    } else if (image === null) {
+      cover.hidden = true;
+      cover.removeAttribute("src");
+    }
+    updateCaption(state);
+    if (!outgoing) return;
     const shift = (value) => "translateX(" + value * 100 + "%)";
-    const timing = { duration: 420, easing: "cubic-bezier(.32,.05,.2,1)" };
-    const exit = outgoing.animate([{ transform: "none" }, { transform: shift(-direction) }], timing);
-    const enter = image.animate([{ transform: shift(direction) }, { transform: "none" }], timing);
+    const timing = { duration: 640, easing: "cubic-bezier(.37,.03,.18,1)", fill: "both" };
+    const exit = outgoing.animate([{ transform: "none", opacity: 1 }, { transform: shift(-direction), opacity: 0 }], timing);
+    const enter = card.animate([{ transform: shift(direction), opacity: 0 }, { transform: "none", opacity: 1 }], timing);
     state.coverSlide = { node: outgoing, exit, enter };
     exit.onfinish = () => clearCoverSlide(state);
   }
@@ -390,7 +407,13 @@
       </header>
       <div class="lep-body">
         <section class="lep-track" data-ui="track" aria-label="Portada del álbum">
-          <div class="lep-cover"><img data-ui="cover" alt="Carátula del álbum" decoding="async" referrerpolicy="no-referrer" hidden></div>
+          <figure class="lep-card" data-ui="card">
+            <div class="lep-cover"><img data-ui="cover" alt="Carátula del álbum" decoding="async" referrerpolicy="no-referrer" hidden></div>
+            <figcaption class="lep-caption" data-ui="caption" hidden>
+              <h2 data-ui="title" dir="auto" hidden></h2>
+              <p data-ui="artist" dir="auto" hidden></p>
+            </figcaption>
+          </figure>
         </section>
         <section class="lep-lyrics" data-ui="lyrics" aria-label="Letra">
           <div class="lep-scroll" data-ui="scroll" tabindex="0" aria-label="Versos">
@@ -504,7 +527,11 @@
     }
 
     state.onSong = (event) => changeTrack(state, event?.data);
-    state.onPlayback = () => updateClock(state);
+    state.onPlayback = () => {
+      const uri = player.data?.item?.uri || player.origin?._state?.item?.uri;
+      if (!document.hidden && uri && uri !== state.track?.uri) changeTrack(state);
+      else updateClock(state);
+    };
     const volumeEvents = globalThis.Spicetify?.Platform?.PlaybackAPI?._events;
     if (typeof volumeEvents?.removeListener === "function") {
       const onVolume = (event) => syncVolume(state, event?.data?.volume);
@@ -582,6 +609,7 @@
     playbar.active = false;
     state.controller.abort();
     clearTimeout(state.idleTimer);
+    clearTimeout(state.slideTimer);
     stopWatching(state);
     stopWatchingMetadata(state);
     state.artworkAnimation?.cancel();
@@ -609,14 +637,18 @@
     const swapped = old && (old.uri && current.uri ? old.uri !== current.uri :
       old.title && current.title && old.title !== current.title);
     state.track = current;
-    if (!old || swapped || old.art !== current.art || old.albumId !== current.albumId) {
-      const direction = swapped ? trackDirection(state, current.uri) : 0;
-      if (swapped) {
-        state.lastTrackUri = old.uri;
-        state.neighbors = null;
-      }
-      updateCover(state, current, direction);
+    if (swapped) {
+      clearCoverSlide(state);
+      clearTimeout(state.slideTimer);
+      state.slideDirection = trackDirection(state, current.uri);
+      state.lastTrackUri = old.uri;
+      state.neighbors = null;
+      // Spotify can publish the track before its artwork. Give the image a
+      // short head start, but never let a late refresh cancel the transition.
+      state.slideTimer = setTimeout(() => paintTrackCard(state), 220);
     }
+    if (!state.slideDirection) updateCaption(state);
+    if (!old || swapped || old.art !== current.art || old.albumId !== current.albumId) updateCover(state, current);
     if (!old || old.uri !== current.uri || (!old.uri && old.title !== current.title) ||
         (!old.title && current.title)) {
       if (state.rows.length) state.previous = state.rows;
@@ -1075,16 +1107,23 @@
       grid-template-columns: minmax(180px, 0.92fr) minmax(0, 1.08fr); gap: clamp(28px, 6vw, 120px);
     }
     #lep-dialog .lep-track { min-width: 0; min-height: 0; display: grid; place-items: center; }
+    #lep-dialog .lep-card {
+      width: min(100%, 53vh, 650px); min-width: 0; margin: 0; display: grid; gap: clamp(8px, 1.6vh, 22px);
+    }
     #lep-dialog .lep-cover {
-      position: relative; width: min(100%, 56vh, 650px); aspect-ratio: 1; overflow: hidden;
+      position: relative; width: 100%; aspect-ratio: 1; overflow: hidden;
       border-radius: clamp(12px, 1.6vw, 26px);
       background: linear-gradient(142deg, #ffffff18, #0b0d1424), var(--lep-shade);
       box-shadow: 0 24px 72px #07071166; outline: 1px solid #ffffff35; outline-offset: -1px;
     }
     #lep-dialog .lep-cover img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
-    #lep-dialog .lep-cover.lep-cover-ghost { position: absolute; z-index: 1; pointer-events: none; }
+    #lep-dialog .lep-caption { min-width: 0; text-align: center; text-shadow: 0 2px 10px #07071180; }
+    #lep-dialog .lep-caption :is(h2, p) { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #lep-dialog .lep-caption h2 { font-size: clamp(1.09rem, 1.9vw, 2.1rem); font-weight: 710; letter-spacing: -.022em; }
+    #lep-dialog .lep-caption p { color: var(--lep-muted); font-size: clamp(.88rem, 1.18vw, 1.2rem); }
+    #lep-dialog .lep-card.lep-card-copy { position: absolute; z-index: 1; pointer-events: none; }
     #lep-dialog[data-layout="cover"] .lep-body, #lep-dialog[data-layout="lyrics"] .lep-body { grid-template-columns: minmax(0, 1fr); }
-    #lep-dialog[data-layout="cover"] .lep-cover { width: min(100%, 63vh, 760px); }
+    #lep-dialog[data-layout="cover"] .lep-card { width: min(100%, 59vh, 760px); }
     #lep-dialog[data-layout="lyrics"] .lep-lyrics { width: min(100%, 960px); margin: 0 auto; }
     #lep-dialog .lep-lyrics {
       position: relative; min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr);
@@ -1180,7 +1219,8 @@
       #lep-dialog .lep-actions { grid-column: 2; }
       #lep-dialog .lep-body { gap: 8px; }
       #lep-dialog[data-layout="both"] .lep-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); padding-top: calc(var(--lep-edge) + 52px); }
-      #lep-dialog[data-layout="both"] .lep-cover { width: min(45vw, 27vh); border-radius: 12px; }
+      #lep-dialog[data-layout="both"] .lep-card { width: min(56vw, 29vh); }
+      #lep-dialog[data-layout="both"] .lep-cover { border-radius: 12px; }
       #lep-dialog .lep-scroll { --lep-lyric-mask: linear-gradient(to bottom, transparent, black 12%, black 68%, transparent); }
       #lep-dialog .lep-dock { grid-template-columns: minmax(0, 1fr) minmax(0, auto); padding: 8px 14px; gap: 4px; }
       #lep-dialog .lep-follow { grid-column: 2; grid-row: 1; font-size: 0.75rem; min-height: 30px; }
@@ -1189,7 +1229,7 @@
       #lep-dialog .lep-transport .lep-icon, #lep-dialog .lep-play { width: 44px; height: 44px; }
     }
     @media (max-height: 540px) and (min-width: 721px) {
-      #lep-dialog .lep-cover { width: min(100%, 49vh); }
+      #lep-dialog .lep-track .lep-card { width: min(100%, 47vh); }
     }
     @media (forced-colors: active) {
       #lep-dialog .lep-scroll { --lep-lyric-mask: none; }
