@@ -1,5 +1,5 @@
 // NAME: Letras en pantalla
-// VERSION: 1.1.0
+// VERSION: 1.2.0
 // DESCRIPTION: Letras nativas, portadas y controles en pantalla completa.
 
 (() => {
@@ -11,6 +11,7 @@
 
   const TITLE = "Letras en pantalla";
   const KEY = "letras-en-pantalla:config";
+  const IDLE_MS = 3000;
   const NATIVE_FULL = 'button[data-testid="fullscreen-mode-button"]';
   const NATIVE_LYRICS = 'button[data-testid="lyrics-button"], button.main-nowPlayingBar-lyricsButton';
   const WIDGET = '[data-testid="now-playing-widget-v2"], [data-testid="now-playing-widget"], .main-nowPlayingWidget-nowPlaying';
@@ -34,10 +35,11 @@
   };
   const icon = (name, size = 22) => '<svg width="' + size + '" height="' + size + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + DRAWINGS[name] + '</svg>';
   const motionPreference = matchMedia("(prefers-reduced-motion: no-preference)");
-  const settings = { layout: "both", palette: "album", size: "standard", motion: true, follow: true, native: true, style: true, glass: true };
+  const settings = { layout: "both", palette: "album", size: "standard", motion: true, follow: true,
+    native: true, style: true, glass: true, drift: true };
   try {
     const saved = JSON.parse(localStorage.getItem(KEY) || "{}");
-    for (const key of ["motion", "follow", "native", "style", "glass"]) {
+    for (const key of ["motion", "follow", "native", "style", "glass", "drift"]) {
       if (typeof saved?.[key] === "boolean") settings[key] = saved[key];
     }
     if (["cover", "lyrics", "both"].includes(saved?.layout)) {
@@ -60,18 +62,66 @@
     if (!stage) return;
     stage.dialog.dataset.palette = settings.palette;
     stage.dialog.dataset.glass = String(settings.glass);
+    stage.dialog.dataset.drift = String(settings.drift);
     stage.dialog.dataset.layout = settings.layout;
     stage.ui.track.hidden = settings.layout === "lyrics";
     stage.ui.lyrics.hidden = settings.layout === "cover";
     stage.ui.followControl.hidden = settings.layout === "cover";
     stage.ui.follow.checked = settings.follow;
     for (const field of stage.ui.layout.elements) field.checked = field.value === settings.layout;
-    highlight(stage, settings.follow);
   }
 
   function saveSettings() {
     try { localStorage.setItem(KEY, JSON.stringify(settings)); } catch { /* Keep session preferences. */ }
     applySettings();
+  }
+
+  function switchLayout(state, layout) {
+    const before = settings.layout;
+    if (layout === before) return;
+    const elements = [state.ui.cover.parentElement, state.ui.lyrics];
+    const animate = settings.motion && motionPreference.matches && typeof elements[0].animate === "function";
+    const oldBounds = animate ? elements.map((element) => element.getBoundingClientRect()) : [];
+    state.layoutAnimations.forEach((animation) => animation.cancel());
+    state.layoutAnimations = [];
+    settings.layout = layout;
+    saveSettings();
+    if (layout === "cover") stopWatching(state);
+    else if (before === "cover") watchLyrics(state);
+    highlight(state, true);
+    if (!animate) return;
+
+    for (const [i, element] of elements.entries()) {
+      const next = element.getBoundingClientRect();
+      const old = oldBounds[i];
+      if (!next.width || !next.height) continue;
+      const entering = !old.width || !old.height;
+      const horizontal = entering ? 12 : old.left - next.left;
+      const vertical = entering ? 8 : old.top - next.top;
+      const scale = i === 0 && !entering ? old.width / next.width : 1;
+      state.layoutAnimations.push(element.animate([
+        { transformOrigin: "top left", transform: "translate(" + horizontal + "px," + vertical + "px) scale(" + scale + ")", opacity: entering ? 0 : 0.82 },
+        { transformOrigin: "top left", transform: "none", opacity: 1 },
+      ], { duration: 300, easing: "cubic-bezier(.22,.61,.36,1)" }));
+    }
+  }
+
+  function revealControls(state, event) {
+    if (event?.type === "keydown") state.keyboard = true;
+    if (event?.type === "pointermove" || event?.type === "pointerdown") state.keyboard = false;
+    state.lastInput = performance.now();
+    if (state.dialog.dataset.idle) delete state.dialog.dataset.idle;
+    if (state.idleTimer || document.hidden) return;
+    state.idleTimer = setTimeout(hideWhenIdle, IDLE_MS);
+
+    function hideWhenIdle() {
+      state.idleTimer = 0;
+      if (stage !== state || !state.dialog.open || document.hidden ||
+          state.keyboard || !state.ui.options.hidden || state.seeking) return;
+      const remaining = IDLE_MS - (performance.now() - state.lastInput);
+      if (remaining > 0) state.idleTimer = setTimeout(hideWhenIdle, remaining);
+      else state.dialog.dataset.idle = "true";
+    }
   }
 
   function track(eventState) {
@@ -80,7 +130,7 @@
     const item = items[0];
     const meta = item?.metadata ?? {};
     const widget = document.querySelector(WIDGET);
-    const link = widget?.querySelector(TRACK_LINK);
+    const link = widget?.querySelector(TRACK_LINK) || widget?.querySelector('a[href^="/album/"]');
     const media = navigator.mediaSession?.metadata;
     const widgetTitle = link?.textContent?.trim() || link?.getAttribute("title") || "";
     const visibleUri = /\/(track|episode)\/([a-z0-9]+)/i.exec(link?.getAttribute("href") || "");
@@ -229,7 +279,7 @@
       </header>
       <div class="lep-body">
         <section class="lep-track" data-ui="track" aria-label="Portada del álbum">
-          <div class="lep-cover"><img data-ui="cover" alt="" decoding="async" referrerpolicy="no-referrer" hidden></div>
+          <div class="lep-cover"><img data-ui="cover" alt="Carátula del álbum" decoding="async" referrerpolicy="no-referrer" hidden></div>
         </section>
         <section class="lep-lyrics" data-ui="lyrics" aria-label="Letra">
           <div class="lep-scroll" data-ui="scroll" tabindex="0" aria-label="Versos">
@@ -261,6 +311,7 @@
         <label>Fondo <select data-setting="palette" aria-label="Fondo"><option value="album">Colores de la portada</option><option value="mora">Mora</option><option value="oceano">Océano</option><option value="tinta">Tinta</option></select></label>
         <label>Tamaño de letra <select data-setting="size" aria-label="Tamaño de letra"><option value="compact">Compacto</option><option value="standard">Mediano</option><option value="large">Grande</option></select></label>
         <label><input data-setting="glass" type="checkbox"> Efecto vidrio</label>
+        <label><input data-setting="drift" type="checkbox"> Fondo en movimiento</label>
         <label><input data-setting="motion" type="checkbox"> Desplazamiento suave</label>
         <label><input data-setting="style" type="checkbox"> Mejorar la vista normal de letras</label>
         <label><input data-setting="native" type="checkbox"> Usar el botón de pantalla completa de Spotify</label>
@@ -268,40 +319,28 @@
     const ui = Object.fromEntries([...dialog.querySelectorAll("[data-ui]")].map((node) => [node.dataset.ui, node]));
     const state = { dialog, ui, entered, openedAt: performance.now(), controller: new AbortController(),
       rows: [], active: -1, frame: 0, deadline: 0, dirty: false, track: null, previous: null,
-      ...nativeView, clock: "", seeking: false, metadataFrame: 0, artworkAnimation: null };
+      ...nativeView, clock: "", seeking: false, metadataFrame: 0, artworkAnimation: null,
+      layoutAnimations: [], idleTimer: 0, keyboard: false };
     stage = state;
     const on = (target, type, callback) => target.addEventListener(type, callback, { signal: state.controller.signal });
 
     ui.follow.checked = settings.follow;
+    for (const type of ["pointermove", "pointerdown"]) on(dialog, type, (event) => revealControls(state, event));
+    on(document, "keydown", (event) => { if (state.dialog.open) revealControls(state, event); });
+    on(dialog, "focusin", () => { if (state.keyboard) revealControls(state); });
     on(ui.follow, "change", () => {
       settings.follow = ui.follow.checked;
       saveSettings();
+      if (settings.follow) highlight(state, true);
     });
     on(ui.exit, "click", () => dialog.close());
     on(ui.back, "click", () => player.back());
     on(ui.play, "click", () => player.togglePlay());
     on(ui.next, "click", () => player.next());
-    on(ui.layout, "change", (event) => {
-      settings.layout = event.target.value;
-      saveSettings();
-      if (settings.layout === "cover") {
-        stopWatching(state);
-        leaveNativeLyrics(state);
-        state.source = null;
-        state.rows = [];
-        state.previous = null;
-        state.nativeRows = null;
-        state.active = -1;
-        ui.lines.replaceChildren();
-        ui.credit.hidden = true;
-        status(state, state.track?.title ? "Buscando letra…" : "Reproduce una canción para ver su letra.");
-      } else {
-        openNativeLyrics(state);
-        watchLyrics(state);
-      }
-    });
+    on(ui.layout, "change", (event) => switchLayout(state, event.target.value));
     on(ui.cover, "load", () => {
       setAmbient(state, ui.cover);
+      ui.cover.setAttribute("aria-description", ui.cover.naturalWidth + " × " + ui.cover.naturalHeight + " píxeles");
       if (ui.cover.naturalWidth < 512) tryAlbumCover(state);
     });
     on(ui.cover, "error", () => {
@@ -318,9 +357,13 @@
     });
     on(ui.position, "change", () => {
       state.seeking = false;
+      revealControls(state);
       player.seek(Number(ui.position.value) * 1000);
     });
-    on(ui.position, "blur", () => { state.seeking = false; });
+    on(ui.position, "blur", () => {
+      state.seeking = false;
+      revealControls(state);
+    });
     ui.scroll.addEventListener("wheel", () => {
       if (settings.follow && state.rows.length) {
         settings.follow = false;
@@ -335,6 +378,7 @@
       ui.options.hidden = !ui.options.hidden;
       ui.tune.setAttribute("aria-expanded", String(!ui.options.hidden));
       if (!ui.options.hidden) ui.options.querySelector("select").focus();
+      revealControls(state);
     });
     for (const field of ui.options.querySelectorAll("[data-setting]")) {
       const key = field.dataset.setting;
@@ -344,6 +388,7 @@
       on(field, "change", () => {
         settings[key] = checkbox ? field.checked : field.value;
         saveSettings();
+        if (key === "size") highlight(state, true);
       });
     }
 
@@ -359,15 +404,19 @@
       else dialog.close();
     });
     on(document, "visibilitychange", () => {
+      dialog.dataset.inactive = String(document.hidden);
       if (document.hidden) {
         stopWatching(state);
         stopWatchingMetadata(state);
+        clearTimeout(state.idleTimer);
+        state.idleTimer = 0;
       }
       else {
         changeTrack(state);
         if (stage === state) {
           watchMetadata(state);
           watchLyrics(state);
+          revealControls(state);
         }
       }
     });
@@ -377,6 +426,7 @@
     if (stage === state) {
       dialog.showModal();
       watchMetadata(state);
+      revealControls(state);
     }
   }
 
@@ -390,7 +440,7 @@
   }
 
   function openNativeLyrics(state) {
-    if (settings.layout === "cover" || inLyrics() || document.querySelector(SOURCE)) return;
+    if (inLyrics() || document.querySelector(SOURCE)) return;
     const button = document.querySelector(NATIVE_LYRICS);
     if (!button || button.disabled || button.getAttribute("aria-disabled") === "true" || state.clickedLyrics) return;
     state.clickedLyrics = true;
@@ -410,9 +460,11 @@
     stage = null;
     playbar.active = false;
     state.controller.abort();
+    clearTimeout(state.idleTimer);
     stopWatching(state);
     stopWatchingMetadata(state);
     state.artworkAnimation?.cancel();
+    state.layoutAnimations.forEach((animation) => animation.cancel());
     player.removeEventListener("songchange", state.onSong);
     player.removeEventListener("onplaypause", state.onPlayback);
     player.removeEventListener("onprogress", state.onPlayback);
@@ -803,9 +855,17 @@
     }
     #lep-dialog .lep-ambient {
       position: absolute; inset: 0; pointer-events: none; z-index: -1;
+      overflow: hidden;
+      background: var(--lep-bg);
+    }
+    #lep-dialog .lep-ambient::before {
+      content: "";
+      position: absolute; inset: -13%;
+      translate: 0 0;
+      scale: 1;
       background:
-        radial-gradient(ellipse at 12% 63%, var(--lep-wash), transparent 67%),
-        radial-gradient(ellipse at 79% 10%, var(--lep-shade), transparent 66%),
+        radial-gradient(ellipse at 23% 65%, var(--lep-wash), transparent 63%),
+        radial-gradient(ellipse at 76% 23%, var(--lep-shade), transparent 69%),
         var(--lep-bg);
     }
     #lep-dialog .lep-glass {
@@ -819,6 +879,13 @@
     #lep-dialog[data-glass="false"] .lep-glass { background: #171721; box-shadow: none; }
     #lep-dialog .lep-header {
       display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 8px;
+    }
+    #lep-dialog :is(.lep-header, .lep-dock) {
+      position: relative; z-index: 1; opacity: 1; translate: 0 0;
+    }
+    #lep-dialog[data-idle="true"], #lep-dialog[data-idle="true"] * { cursor: none; }
+    #lep-dialog[data-idle="true"] :is(.lep-header, .lep-dock) {
+      opacity: 0; visibility: hidden; pointer-events: none;
     }
     #lep-dialog .lep-actions { grid-column: 3; justify-self: end; display: flex; gap: 8px; }
     #lep-dialog .lep-layout {
@@ -859,9 +926,10 @@
       min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto;
     }
     #lep-dialog .lep-scroll {
-      overflow: auto; overscroll-behavior: contain; scrollbar-color: #ffffff80 transparent;
+      overflow: auto; overscroll-behavior: contain; scrollbar-width: none;
       padding: 6px clamp(4px, 1.5vw, 24px);
     }
+    #lep-dialog .lep-scroll::-webkit-scrollbar { display: none; }
     #lep-dialog .lep-lines { padding-block: min(23vh, 190px) min(46vh, 440px); display: grid; gap: clamp(13px, 2.3vh, 30px); }
     #lep-dialog .lep-lines[data-timed="false"] { padding-block: clamp(14px, 5vh, 74px); }
     #lep-dialog :is(button, p).lep-line {
@@ -870,6 +938,10 @@
       letter-spacing: -0.048em; overflow-wrap: anywhere; padding: 4px 0 4px clamp(9px, 1.2vw, 20px); text-wrap: pretty;
     }
     #lep-dialog button.lep-line:hover { color: var(--lep-muted); }
+    #lep-dialog .lep-lines[data-timed="true"] .lep-line:not([aria-current="true"], :hover, :focus-visible) {
+      color: transparent;
+      text-shadow: 0 0 0.062em var(--lep-quiet);
+    }
     #lep-dialog :is(button, p).lep-line[aria-current="true"], #lep-dialog [data-timed="false"] :is(button, p).lep-line { color: var(--lep-ink); }
     #lep-dialog .lep-line[aria-current="true"]::before {
       content: ""; position: absolute; inset-block: 16%; inset-inline-start: 0;
@@ -910,7 +982,27 @@
     html[data-lep-style="true"][data-lep-size="large"] :is(.lyrics-lyricsContent-lyric, .lyrics-lyricsContent-text) { font-size: clamp(1.65rem, 3.5vw, 4rem) !important; }
     html[data-lep-style="true"] :is(.lyrics-lyricsContent-lyric.lyrics-lyricsContent-active, [aria-current="true"] > .lyrics-lyricsContent-text) { text-decoration: underline 0.04em currentColor; text-underline-offset: 0.16em; }
     @media (prefers-reduced-motion: no-preference) {
-      html[data-lep-motion="true"] #lep-dialog :is(button, p).lep-line { transition: color 150ms ease; }
+      html[data-lep-motion="true"] #lep-dialog :is(button, p).lep-line { transition: color 160ms ease; }
+      html[data-lep-motion="true"] #lep-dialog :is(.lep-header, .lep-dock) {
+        transition: opacity 220ms ease, translate 260ms ease, visibility 0s;
+      }
+      html[data-lep-motion="true"] #lep-dialog[data-idle="true"] :is(.lep-header, .lep-dock) {
+        transition-delay: 0s, 0s, 220ms;
+      }
+      html[data-lep-motion="true"] #lep-dialog[data-idle="true"] .lep-header { translate: 0 -8px; }
+      html[data-lep-motion="true"] #lep-dialog[data-idle="true"] .lep-dock { translate: 0 10px; }
+      #lep-dialog[data-drift="true"] .lep-ambient::before { animation: lep-drift 32s ease-in-out infinite alternate; }
+      #lep-dialog[data-inactive="true"] .lep-ambient::before { animation-play-state: paused; }
+    }
+    @keyframes lep-drift {
+      0% { translate: -2% 1%; scale: 1.02; }
+      52% { translate: 3% -2%; scale: 1.09; }
+      100% { translate: 1% 3%; scale: 1.04; }
+    }
+    @media (forced-colors: active) {
+      #lep-dialog .lep-lines[data-timed="true"] .lep-line:not([aria-current="true"], :hover, :focus-visible) {
+        color: CanvasText; text-shadow: none;
+      }
     }
     @media (max-width: 720px) {
       #lep-dialog .lep-header { grid-template-columns: auto 1fr; }

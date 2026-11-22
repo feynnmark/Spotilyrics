@@ -23,14 +23,15 @@ spicetify backup apply --no-restart
 
 - El verso activo se destaca y se desplaza con la sincronización que Spotify trae para esa pista. Haz clic en un verso cuando Spotify permita buscar su posición. Una letra sin marcas de tiempo se muestra para lectura estática.
 - Desactiva **Seguir letra** para leer a tu ritmo. Girar la rueda sobre los versos también detiene el seguimiento.
+- Los versos próximos se ven suaves y el actual queda nítido. Puedes recorrerlos con la rueda o el teclado. Los controles se ocultan tras tres segundos de inactividad y vuelven al mover el puntero o pulsar una tecla.
 - La carátula conserva sus proporciones. La extensión intenta cargar la variante de 640 píxeles del CDN. Si el cliente solo entrega una miniatura, busca la portada del álbum en el oEmbed público de Spotify y conserva la miniatura si falla la consulta.
-- En **Ajustes**, elige el fondo y el tamaño de letra. También puedes desactivar el efecto vidrio y el desplazamiento suave, conservar la vista normal de letras de Spotify y devolver el botón nativo de pantalla completa a su función original. **Letras en pantalla** sigue disponible como botón independiente.
+- En **Ajustes**, elige el fondo y el tamaño de letra. Puedes pausar el movimiento del fondo, desactivar el efecto vidrio y el desplazamiento suave, conservar la vista normal de letras de Spotify y devolver el botón nativo de pantalla completa a su función original. **Letras en pantalla** sigue disponible como botón independiente.
 - Pulsa **Esc** o el botón de salida para volver a Spotify. Si el cliente rechaza el modo de pantalla completa del sistema, la vista ocupa su ventana.
 - La disponibilidad y los tiempos de las letras dependen de la pista, la cuenta y la interfaz de Spotify. Si una actualización de Spotify cambia esa interfaz, puede aparecer la portada con un aviso de que falta la letra. El reproductor sigue disponible.
 
 ## Rendimiento y privacidad
 
-La extensión usa un archivo JavaScript sin dependencias de ejecución. Fuera de la pantalla completa, se limita al botón, los estilos de la vista normal y un controlador de clics. Al cerrar o pasar a un anuncio, desmonta la vista y desconecta sus observadores y eventos de reproducción. **Portada** deja de observar las letras. La ventana oculta suspende sus observadores. El fondo usa una muestra de 16 × 16 píxeles por portada y la transición respeta la preferencia de movimiento reducido del sistema.
+La extensión usa un archivo JavaScript sin dependencias de ejecución. Fuera de la pantalla completa, se limita al botón, los estilos de la vista normal y un controlador de clics. Al cerrar o pasar a un anuncio, desmonta la vista y desconecta sus observadores y eventos de reproducción. **Portada** interrumpe el seguimiento de letras hasta volver a mostrarlas. La ventana oculta suspende sus observadores y el movimiento del fondo. El fondo usa una muestra de 16 × 16 píxeles por portada. Las animaciones respetan la preferencia de movimiento reducido del sistema.
 
 Solo lee las letras que Spotify ya dibuja y mantiene su atribución cuando el cliente la muestra. La portada usa el CDN de Spotify y la búsqueda opcional de una imagen mayor envía únicamente la dirección pública del álbum a Spotify. Guarda las preferencias de apariencia en el cliente. Las letras y portadas pertenecen a sus titulares.
 
