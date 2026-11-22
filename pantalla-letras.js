@@ -85,6 +85,8 @@
     const widgetTitle = link?.textContent?.trim() || link?.getAttribute("title") || "";
     const visibleUri = /\/(track|episode)\/([a-z0-9]+)/i.exec(link?.getAttribute("href") || "");
     const uri = item?.uri || (visibleUri ? ["spotify", ...visibleUri.slice(1)].join(":") : "");
+    const album = /^spotify:album:([a-z0-9]{22})$/i.exec(meta.album_uri || item?.album?.uri || "") ||
+      /\/album\/([a-z0-9]{22})(?:[/?#]|$)/i.exec(link?.getAttribute("href") || "");
     const title = meta.title || item?.name || item?.title || widgetTitle || media?.title || "";
     const mediaMatches = !title || !media?.title || title === media.title;
     const artists = item?.artists?.map?.((artist) => artist?.name).filter(Boolean).join(", ") ||
@@ -98,7 +100,7 @@
       widgetCover?.currentSrc, widgetCover?.src].map(artwork).find(Boolean) || "";
     const ad = states.some((state) => state.is_ad || state.isAd) || /^spotify:ad(?::|$)/.test(uri) ||
       item?.type === "ad" || meta.entity_type === "ad" || [meta.is_ad, meta.is_advertisement].some((value) => value === true || value === "true");
-    return { uri, ad, title, artists, art };
+    return { uri, ad, title, artists, art, albumId: album?.[1] || "" };
   }
 
   function artwork(value) {
@@ -118,6 +120,32 @@
     url.pathname = url.pathname.replace(/^\/image\/ab67616d0000(?:4851|1e02)([a-f0-9]{24})$/i,
       "/image/ab67616d0000b273$1");
     return url.href;
+  }
+
+  async function tryAlbumCover(state) {
+    const albumId = state.track?.albumId;
+    if (!albumId || state.coverAlbum === albumId) return;
+    state.coverAlbum = albumId;
+    const request = new URL("https://open.spotify.com/oembed");
+    request.searchParams.set("url", "https://open.spotify.com/album/" + albumId);
+    try {
+      const response = await fetch(request, {
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        signal: state.controller.signal,
+      });
+      if (!response.ok) return;
+      const result = await response.json();
+      const thumbnail = artwork(result.thumbnail_url);
+      if (!thumbnail || stage !== state || state.track?.albumId !== albumId) return;
+      const cover = fullSizeCover(thumbnail);
+      if (state.ui.cover.src !== cover) {
+        state.ui.cover.crossOrigin = "anonymous";
+        state.ui.cover.src = cover;
+      }
+    } catch {
+      // The native artwork stays usable when Spotify does not return a larger image.
+    }
   }
 
   function setAmbient(state, cover) {
@@ -273,7 +301,10 @@
         watchLyrics(state);
       }
     });
-    on(ui.cover, "load", () => setAmbient(state, ui.cover));
+    on(ui.cover, "load", () => {
+      setAmbient(state, ui.cover);
+      if (ui.cover.naturalWidth < 512) tryAlbumCover(state);
+    });
     on(ui.cover, "error", () => {
       if (state.track?.art && ui.cover.src !== state.track.art) {
         ui.cover.src = state.track.art;
@@ -413,6 +444,7 @@
         state.dialog.style.removeProperty("--lep-art-main");
         state.dialog.style.removeProperty("--lep-art-secondary");
         delete state.dialog.dataset.colors;
+        tryAlbumCover(state);
       }
     }
     if (!old || old.uri !== current.uri || (!old.uri && old.title !== current.title) ||
