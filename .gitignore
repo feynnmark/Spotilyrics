@@ -1,1 +1,16 @@
 /dist/
+/.vs/
+**/bin/
+**/obj/
+.env
+.env.*
+*.log
+*.exe
+*.pdb
+*.zip
+*.pfx
+*.key
+config-xpui.ini
+prefs
+Desktop.ini
+Thumbs.db

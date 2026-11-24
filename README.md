@@ -1,14 +1,24 @@
-# Letras en pantalla
+# Spotilyrics
 
-Extensión para Spicetify que amplía las letras de Spotify y añade una vista a pantalla completa con una barra de reproducción translúcida. Elige **Portada**, **Ambas** o **Letra**. El fondo transforma la carátula del álbum en una imagen difuminada en movimiento.
+Letras sincronizadas, portadas grandes y fondos en movimiento en la pantalla completa de Spotify para Windows. Elige **Portada**, **Letra** o **Ambas** desde el reproductor.
+
+![Vista de pantalla completa con portada, nombre de la canción, letras sincronizadas y controles](docs/img/pantalla-completa.png)
+
+Las capturas del reproductor usan una portada, una canción y letras de demostración. [Ver modo solo portada](docs/img/solo-portada.png).
 
 ## Instalar en Windows
 
-1. Comprueba que tu versión de Spotify está dentro del rango que admite tu versión de [Spicetify](https://github.com/spicetify/cli/releases).
-2. Extrae el ZIP y abre **Instalar.cmd**. El instalador registra la extensión y aplica los cambios con Spicetify sin reiniciar la aplicación. Cuando puedas interrumpir la música, cierra Spotify y ábrelo de nuevo.
-3. Reproduce una canción. Pulsa el botón **Letras en pantalla** cerca de la barra de reproducción o el botón de pantalla completa de Spotify.
+1. Usa **Spotify de escritorio** instalado desde [spotify.com](https://www.spotify.com/download/windows/) y ábrelo al menos una vez. El instalador 1.4.0 admite **Spotify 1.2.14 a 1.3.9** con [Spicetify 2.46.7](https://github.com/spicetify/cli/releases/tag/v2.46.7#compatibility).
+2. Descarga `Letras-en-pantalla-1.4.0-Setup.exe` de la [versión 1.4.0](https://github.com/feynnmark/Spotilyrics/releases/tag/v1.4.0). Ejecútalo y pulsa **Instalar / actualizar**. Necesita conexión en el primer uso para descargar la herramienta oficial de Spicetify y verificar su SHA-256.
+3. Abre Spotify. Si estaba abierto durante la instalación, ciérralo y vuelve a abrirlo. La primera vez aparece una bienvenida que señala cómo entrar en **Pantalla completa** desde la esquina inferior derecha. También puedes pulsar **Letras en pantalla** en la barra de reproducción.
 
-El instalador también se puede ejecutar desde una terminal. Ejecuta `.\Instalar.cmd /s` para omitir la pausa final. La extensión funciona con tu sesión habitual de Spotify.
+![Ventana de instalación con acciones para instalar, actualizar o quitar el complemento](docs/img/instalador.png)
+
+![Bienvenida de primer uso y botón Pantalla completa señalado](docs/img/bienvenida.png)
+
+El instalador usa tu cuenta de Windows actual y conserva tu sesión de Spotify. Marketplace es opcional. Si ya lo tienes, su acceso se oculta por defecto y puedes recuperarlo en **Ajustes → Mostrar acceso a Marketplace**.
+
+Si Spotify se actualiza a una versión fuera del rango, el instalador muestra el motivo y se detiene. La compilación actual carece de firma Authenticode. Puedes comprobar su integridad con `Get-FileHash .\Letras-en-pantalla-1.4.0-Setup.exe -Algorithm SHA256` y comparar el resultado con el archivo `.exe.sha256` de la misma publicación.
 
 ### Instalar manualmente
 
@@ -18,6 +28,8 @@ Copia `pantalla-letras.js` a la carpeta `Extensions` de Spicetify. Ejecuta estos
 spicetify config extensions pantalla-letras.js
 spicetify backup apply --no-restart
 ```
+
+Si Spotify ya tiene una copia de seguridad válida de Spicetify y se ha modificado previamente, usa `spicetify apply --no-restart`. Con la CLI instalada también puedes usar `Instalar.cmd` desde una copia local.
 
 ## Usar la extensión
 
@@ -39,11 +51,19 @@ Solo lee las letras que Spotify ya dibuja y mantiene su atribución cuando el cl
 
 ## Quitar la extensión
 
+Ejecuta el mismo instalador, pulsa **Quitar** y vuelve a abrir Spotify. Tus otros complementos se conservan. Con Spicetify también puedes quitarla desde la terminal.
+
 ```powershell
 spicetify config extensions pantalla-letras.js-
 spicetify apply --no-restart
 ```
 
-Vuelve a abrir Spotify al terminar. Si quieres eliminar el archivo, bórralo de Extensions. Las otras extensiones se conservan.
+Vuelve a abrir Spotify al terminar. Si quieres eliminar el archivo, bórralo de Extensions.
 
-Este proyecto es independiente de Spotify y Apple. Consulta la documentación de [extensiones de Spicetify](https://spicetify.app/docs/development/extensions) antes de usarlo con una versión diferente del cliente.
+## Compilar y contribuir
+
+En Windows con .NET Framework 4.8, ejecuta `powershell -NoProfile -File .\installer\Build.ps1` desde la raíz. El código del instalador está en `installer/`. La compilación genera el EXE y su SHA-256 en `dist/`. La extensión es `pantalla-letras.js` y su sintaxis se comprueba con `node --check pantalla-letras.js`.
+
+Para reproducir un fallo, incluye la versión de Spotify, la de Spicetify y los pasos. Usa datos de demostración en las capturas. Consulta [Seguridad y privacidad](SECURITY.md) para reportar problemas de seguridad.
+
+El código de Spotilyrics se distribuye con [licencia MIT](LICENSE). Es un proyecto comunitario independiente de Spotify. Usa [Spicetify CLI](https://github.com/spicetify/cli/tree/v2.46.7) como dependencia de instalación.

@@ -1,5 +1,5 @@
 // NAME: Letras en pantalla
-// VERSION: 1.3.1
+// VERSION: 1.4.0
 // DESCRIPTION: Letras nativas, portadas y controles en pantalla completa.
 
 (() => {
@@ -11,8 +11,10 @@
 
   const TITLE = "Letras en pantalla";
   const KEY = "letras-en-pantalla:config";
+  const WELCOME_KEY = "letras-en-pantalla:welcome";
   const IDLE_MS = 3000;
   const NATIVE_FULL = 'button[data-testid="fullscreen-mode-button"]';
+  const MARKETPLACE_LINK = ':is(.custom-navlink, .main-yourLibraryX-navLink):is([aria-label="Marketplace"], [aria-label="Маркетплейс"], [href="/marketplace"])';
   const NATIVE_LYRICS = 'button[data-testid="lyrics-button"], button.main-nowPlayingBar-lyricsButton';
   const WIDGET = '[data-testid="now-playing-widget-v2"], [data-testid="now-playing-widget"], .main-nowPlayingWidget-nowPlaying';
   const TRACK_LINK = '[data-testid="context-item-link"], a[href^="/track/"], a[href^="/episode/"]';
@@ -26,6 +28,7 @@
   const PROVIDER = ".lyrics-lyricsContent-provider";
   const DRAWINGS = {
     stage: '<path d="M9 4H4v5m11-5h5v5M4 15v5h5m11-5v5h-5M8 10h8m-8 4h8"/>',
+    full: '<path d="M9 4H4v5m11-5h5v5M4 15v5h5m11-5v5h-5"/>',
     close: '<path d="m6 6 12 12M18 6 6 18"/>',
     back: '<path d="M5 6v12m14-12-9 6 9 6Z" fill="currentColor"/>',
     next: '<path d="M19 6v12M5 6l9 6-9 6Z" fill="currentColor"/>',
@@ -37,10 +40,10 @@
   const icon = (name, size = 22) => '<svg width="' + size + '" height="' + size + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + DRAWINGS[name] + '</svg>';
   const motionPreference = matchMedia("(prefers-reduced-motion: no-preference)");
   const settings = { layout: "both", palette: "album", size: "standard", motion: true, follow: true,
-    native: true, style: true, glass: true, drift: true };
+    native: true, style: true, glass: true, drift: true, marketplace: false };
   try {
     const saved = JSON.parse(localStorage.getItem(KEY) || "{}");
-    for (const key of ["motion", "follow", "native", "style", "glass", "drift"]) {
+    for (const key of ["motion", "follow", "native", "style", "glass", "drift", "marketplace"]) {
       if (typeof saved?.[key] === "boolean") settings[key] = saved[key];
     }
     if (["cover", "lyrics", "both"].includes(saved?.layout)) {
@@ -60,6 +63,7 @@
     root.dataset.lepStyle = String(settings.style);
     root.dataset.lepSize = settings.size;
     root.dataset.lepMotion = String(settings.motion);
+    root.dataset.lepMarketplace = String(settings.marketplace);
     if (!stage) return;
     stage.dialog.dataset.palette = settings.palette;
     stage.dialog.dataset.glass = String(settings.glass);
@@ -450,6 +454,7 @@
         <label><input data-setting="motion" type="checkbox"> Desplazamiento suave</label>
         <label><input data-setting="style" type="checkbox"> Mejorar la vista normal de letras</label>
         <label><input data-setting="native" type="checkbox"> Usar el botón de pantalla completa de Spotify</label>
+        <label id="lep-marketplace-setting"><input data-setting="marketplace" type="checkbox"> Mostrar acceso a Marketplace</label>
       </section>`;
     const ui = Object.fromEntries([...dialog.querySelectorAll("[data-ui]")].map((node) => [node.dataset.ui, node]));
     const state = { dialog, ui, entered, openedAt: performance.now(), controller: new AbortController(),
@@ -939,6 +944,7 @@
   function open() {
     const current = track();
     if (stage || opening || current.ad || (document.fullscreenElement && document.fullscreenElement !== root)) return false;
+    document.querySelector("#lep-welcome[open]")?.close();
     opening = true;
     const nativeView = { routeFrom: currentPath(), clickedLyrics: false };
     // Expand Spotify's own lyrics before entering fullscreen. Mounting the
@@ -969,6 +975,45 @@
     return true;
   }
 
+  function showWelcomeWhenReady() {
+    try { if (localStorage.getItem(WELCOME_KEY)) return; } catch { /* Show once this session. */ }
+    if (showWelcome()) return;
+    const observer = new MutationObserver(() => { if (showWelcome()) observer.disconnect(); });
+    observer.observe(document.body, { childList: true, subtree: true });
+
+    function showWelcome() {
+      if (!document.querySelector(NATIVE_FULL)) return false;
+      try { localStorage.setItem(WELCOME_KEY, "1"); } catch { /* Keep this session usable. */ }
+      if (stage || opening || typeof HTMLDialogElement.prototype.show !== "function") return true;
+      const dialog = document.createElement("dialog");
+      dialog.id = "lep-welcome";
+      dialog.setAttribute("aria-labelledby", "lep-welcome-title");
+      dialog.innerHTML = `
+        <div class="lep-welcome-icon">${icon("stage", 25)}</div>
+        <h2 id="lep-welcome-title">Letras en pantalla está listo</h2>
+        <ol>
+          <li>Reproduce una canción en Spotify.</li>
+          ${settings.native ? `<li>Pulsa <strong>Pantalla completa</strong> ${icon("full", 15)} en la esquina inferior derecha.</li>` : ""}
+          <li>${settings.native ? "También puedes usar" : "Pulsa"} el botón <strong>Letras en pantalla</strong> ${icon("stage", 15)} en la barra de reproducción.</li>
+        </ol>
+        <form method="dialog"><button type="submit">Entendido</button></form>`;
+      root.dataset.lepWelcome = String(settings.native);
+      dialog.addEventListener("close", () => {
+        delete root.dataset.lepWelcome;
+        dialog.remove();
+      }, { once: true });
+      dialog.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") {
+          event.stopPropagation();
+          dialog.close();
+        }
+      });
+      document.body.append(dialog);
+      dialog.show();
+      return true;
+    }
+  }
+
   function initialize(attempts = 0) {
     const api = globalThis.Spicetify;
     if (!api?.Playbar?.Button || typeof api.Player?.addEventListener !== "function" || !document.body) {
@@ -983,6 +1028,7 @@
     document.head.append(style);
     applySettings();
     playbar = new api.Playbar.Button(TITLE, icon("stage", 16), open);
+    showWelcomeWhenReady();
     document.addEventListener("click", (event) => {
       const button = event.target instanceof Element && event.target.closest(NATIVE_FULL);
       if (!settings.native || !button || button.disabled || button.getAttribute("aria-disabled") === "true") return;
@@ -993,6 +1039,30 @@
   }
 
   const CSS = `
+    html[data-lep-marketplace="false"] ${MARKETPLACE_LINK},
+    html:not(:has(${MARKETPLACE_LINK})) #lep-marketplace-setting { display: none !important; }
+    html[data-lep-welcome="true"] ${NATIVE_FULL} { outline: 2px solid #e9cdfa; outline-offset: 3px; border-radius: 8px; }
+    #lep-welcome {
+      position: fixed; z-index: 10000; inset: auto clamp(12px, 2vw, 32px) clamp(82px, 11vh, 120px) auto;
+      margin: 0; width: min(366px, calc(100% - 24px)); padding: 23px;
+      box-sizing: border-box; border: 1px solid #ffffff36; border-radius: 22px;
+      color: #faf6ff; background: linear-gradient(145deg, #2f203c, #1b1824 67%);
+      box-shadow: 0 22px 56px #08070cbc; font: 500 14px/1.55 "Segoe UI", system-ui, sans-serif;
+    }
+    #lep-welcome .lep-welcome-icon {
+      display: grid; place-items: center; width: 46px; height: 46px; margin-bottom: 12px;
+      border: 1px solid #f2dcff47; border-radius: 14px; color: #f3dcff; background: #f0c3fa16;
+    }
+    #lep-welcome h2 { font: 720 21px/1.18 "Segoe UI", system-ui, sans-serif; margin: 0; letter-spacing: -.02em; }
+    #lep-welcome ol { color: #e0d7e9; margin: 14px 0 17px; padding-inline-start: 19px; }
+    #lep-welcome li + li { margin-top: 5px; }
+    #lep-welcome li svg { vertical-align: -.17em; margin-inline-start: 3px; }
+    #lep-welcome form { display: flex; justify-content: flex-end; }
+    #lep-welcome button {
+      min-height: 38px; padding: 6px 17px; border: 0; border-radius: 999px;
+      background: #ecd8fc; color: #20172a; font: inherit; font-weight: 700; cursor: pointer;
+    }
+    #lep-welcome button:focus-visible { outline: 2px solid #f0daff; outline-offset: 3px; }
     #lep-dialog {
       --lep-bg: #12131f;
       --lep-ink: #faf7fc;
